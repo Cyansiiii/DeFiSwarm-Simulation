@@ -3,7 +3,7 @@ import random # To simulate price changes
 import json
 from alchemy import Alchemy, Network
 from web3 import Web3
-from web3.middleware.proof_of_authority import ExtraDataToPOAMiddleware
+from web3.middleware import geth_poa_middleware
 import requests
 import os
 from crewai import Agent, Task, Crew, Process
@@ -16,6 +16,8 @@ os.environ["OPENAI_API_KEY"] = "tgp_v1_SZfy1HF_Y4Zg5eSBw5zWmypxegW0hgYEGeJ-fE5y0
 os.environ["OPENAI_API_BASE"] = "https://api.together.xyz/v1"
 
 # Initialize Together LLM
+# Use Together's Mixtral model as before
+from langchain_openai import ChatOpenAI
 together_llm = ChatOpenAI(
     model="mistralai/Mixtral-8x7B-Instruct-v0.1",
     temperature=0.7,
@@ -75,7 +77,7 @@ alchemy = Alchemy(
 
 # Initialize Web3 connection with Ganache
 w3 = Web3(Web3.HTTPProvider(GANACHE_URL))
-w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+w3.middleware_onion.inject(geth_poa_middleware, layer=0)
 
 # Get the first account from Ganache for transactions
 ACCOUNT = w3.eth.accounts[0]
@@ -124,24 +126,29 @@ def deploy_contracts():
         print(f"Error deploying contracts: {e}")
         return False
 
-# Tools for Price Checker Agent
-@tool
 def get_eth_price():
-    """Get the current ETH/USD price from Chainlink price feed."""
+    """Get the current ETH/USD price from CoinGecko, fallback to public endpoint if Pro fails."""
     try:
-        # Use the global alchemy instance
-        price_feed = w3.eth.contract(
-            address=Web3.to_checksum_address(ETH_USD_PRICE_FEED),
-            abi=PRICE_FEED_ABI
-        )
-        
-        round_data = price_feed.functions.latestRoundData().call()
-        price = round_data[1] / 10**8
-        return f"Current ETH/USD price is ${price:.2f}"
+        # Try Pro endpoint first
+        url_pro = "https://pro-api.coingecko.com/api/v3/simple/price"
+        params = {'ids': 'ethereum', 'vs_currencies': 'usd'}
+        headers = {'x-cg-pro-api-key': COINGECKO_API_KEY}
+        response = requests.get(url_pro, headers=headers, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            price = data['ethereum']['usd']
+            return f"Current ETH/USD price is ${price:.2f}"
+        # If 400 error, try public endpoint
+        url_pub = "https://api.coingecko.com/api/v3/simple/price"
+        response = requests.get(url_pub, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            price = data['ethereum']['usd']
+            return f"Current ETH/USD price is ${price:.2f} (public API)"
+        return f"Error fetching price: {response.status_code} - {response.text}"
     except Exception as e:
         return f"Error fetching price: {e}"
 
-@tool
 def get_simulated_price():
     """Get a simulated ETH/USD price for testing purposes."""
     try:
@@ -156,106 +163,58 @@ def get_simulated_price():
     except Exception as e:
         return f"Error generating simulated price: {e}"
 
-@tool
 def get_historical_prices(days=30):
-    """Get historical ETH/USD prices from CoinGecko for the specified number of days."""
+    """Get historical ETH/USD prices from CoinGecko, fallback to public endpoint if Pro fails."""
     try:
-        # Calculate dates
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        
-        # Format dates for CoinGecko API (Unix timestamps in seconds)
         start_timestamp = int(start_date.timestamp())
         end_timestamp = int(end_date.timestamp())
-        
-        # Determine if we're using a Demo API key
-        is_demo_key = COINGECKO_API_KEY.startswith('demo_')
-        
-        # Set the appropriate base URL based on the API key type
-        base_url = "https://api.coingecko.com" if is_demo_key else "https://pro-api.coingecko.com"
-        
-        # Make API request
-        headers = {
-            'x-cg-pro-api-key': COINGECKO_API_KEY
-        }
-        url = f"{base_url}/api/v3/coins/ethereum/market_chart/range"
         params = {
             'vs_currency': 'usd',
             'from': start_timestamp,
             'to': end_timestamp
         }
-        
-        print(f"Making request to CoinGecko API with params: {params}")
-        response = requests.get(url, headers=headers, params=params)
-        
-        if response.status_code != 200:
-            error_data = response.json()
-            error_message = error_data.get('status', {}).get('error_message', 'Unknown error')
-            print(f"CoinGecko API error: {response.status_code} - {error_message}")
-            
-            # If we get a 400 error about using the wrong URL, try the other URL
-            if response.status_code == 400 and "change your root URL" in error_message:
-                alt_base_url = "https://api.coingecko.com" if base_url == "https://pro-api.coingecko.com" else "https://pro-api.coingecko.com"
-                alt_url = f"{alt_base_url}/api/v3/coins/ethereum/market_chart/range"
-                print(f"Retrying with alternative URL: {alt_url}")
-                response = requests.get(alt_url, headers=headers, params=params)
-                
-                if response.status_code != 200:
-                    error_data = response.json()
-                    error_message = error_data.get('status', {}).get('error_message', 'Unknown error')
-                    print(f"CoinGecko API error (retry): {response.status_code} - {error_message}")
-                    return f"Error fetching historical prices: {response.status_code} - {error_message}"
-            
-            return f"Error fetching historical prices: {response.status_code} - {error_message}"
-            
-        data = response.json()
-        
-        # Process price data
+        # Try Pro endpoint first
+        url_pro = "https://pro-api.coingecko.com/api/v3/coins/ethereum/market_chart/range"
+        headers = {'x-cg-pro-api-key': COINGECKO_API_KEY}
+        response = requests.get(url_pro, headers=headers, params=params)
+        if response.status_code == 200:
+            data = response.json()
+        else:
+            # Try public endpoint
+            url_pub = "https://api.coingecko.com/api/v3/coins/ethereum/market_chart/range"
+            response = requests.get(url_pub, params=params)
+            if response.status_code != 200:
+                error_data = response.json()
+                error_message = error_data.get('status', {}).get('error_message', response.text)
+                print(f"CoinGecko API error: {response.status_code} - {error_message}")
+                return f"Error fetching historical prices: {response.status_code} - {error_message}"
+            data = response.json()
         prices = data.get('prices', [])
         if not prices:
             return "No historical price data available"
-            
-        # Calculate key metrics
         price_changes = []
         for i in range(1, len(prices)):
             prev_price = prices[i-1][1]
             curr_price = prices[i][1]
             change = ((curr_price - prev_price) / prev_price) * 100
             price_changes.append(change)
-            
         avg_price = sum(p[1] for p in prices) / len(prices)
         max_price = max(p[1] for p in prices)
         min_price = min(p[1] for p in prices)
         avg_change = sum(price_changes) / len(price_changes)
-        
-        # Calculate support and resistance levels
         price_levels = [p[1] for p in prices]
         price_levels.sort()
-        support_level = price_levels[int(len(price_levels) * 0.2)]  # 20th percentile
-        resistance_level = price_levels[int(len(price_levels) * 0.8)]  # 80th percentile
-        
-        # Calculate volatility (standard deviation of price changes)
+        support_level = price_levels[int(len(price_levels) * 0.2)]
+        resistance_level = price_levels[int(len(price_levels) * 0.8)]
         volatility = (sum((x - avg_change) ** 2 for x in price_changes) / len(price_changes)) ** 0.5
-        
-        # Format the analysis
-        analysis = f"""Historical ETH/USD Price Analysis (Last {days} days):
-- Average Price: ${avg_price:.2f}
-- Highest Price: ${max_price:.2f}
-- Lowest Price: ${min_price:.2f}
-- Average Daily Change: {avg_change:.2f}%
-- Current Price: ${prices[-1][1]:.2f}
-- Price Trend: {'Upward' if avg_change > 0 else 'Downward'} trend with {abs(avg_change):.2f}% average daily change
-- Support Level: ${support_level:.2f}
-- Resistance Level: ${resistance_level:.2f}
-- Market Volatility: {volatility:.2f}%"""
-        
+        analysis = f"""Historical ETH/USD Price Analysis (Last {days} days):\n- Average Price: ${avg_price:.2f}\n- Highest Price: ${max_price:.2f}\n- Lowest Price: ${min_price:.2f}\n- Average Daily Change: {avg_change:.2f}%\n- Current Price: ${prices[-1][1]:.2f}\n- Price Trend: {'Upward' if avg_change > 0 else 'Downward'} trend with {abs(avg_change):.2f}% average daily change\n- Support Level: ${support_level:.2f}\n- Resistance Level: ${resistance_level:.2f}\n- Market Volatility: {volatility:.2f}%"""
         return analysis
     except Exception as e:
         print(f"Error in get_historical_prices: {str(e)}")
         return f"Error fetching historical prices: {e}"
 
-# Tools for Trade Maker Agent
-@tool
 def check_balance(address, token_contract):
     """Check the token balance for a specific address and token contract."""
     try:
@@ -271,7 +230,6 @@ def check_balance(address, token_contract):
     except Exception as e:
         return f"Error checking balance: {e}"
 
-@tool
 def execute_trade(decision, amount=100):
     """Execute a trade based on the decision (Buy/Sell) and amount."""
     try:
@@ -349,9 +307,14 @@ def execute_trade(decision, amount=100):
     except Exception as e:
         return f"Error executing trade: {e}"
 
+def log_trade_decision(context, decision):
+    """Append the trade decision and context to a log file."""
+    with open("trade_log.txt", "a") as f:
+        f.write(f"{datetime.now().isoformat()}\nContext: {context}\nDecision: {decision}\n{'-'*40}\n")
+
 def run_simulation(duration_seconds, check_interval_seconds):
     """
-    Runs a simulation of the DeFiSwarm agents using CrewAI.
+    Runs a simulation of the DeFiSwarm agents using CrewAI, passing real data as context.
     """
     print("\n--- Starting DeFiSwarm Simulation with CrewAI ---")
 
@@ -361,7 +324,6 @@ def run_simulation(duration_seconds, check_interval_seconds):
         
     # Verify contract addresses
     try:
-        # Check if contracts are deployed
         dummy_token = w3.eth.contract(
             address=Web3.to_checksum_address(DUMMY_TOKEN_ADDRESS),
             abi=DUMMY_TOKEN_ABI
@@ -370,24 +332,20 @@ def run_simulation(duration_seconds, check_interval_seconds):
             address=Web3.to_checksum_address(TOKEN_TRADING_ADDRESS),
             abi=TOKEN_TRADING_ABI
         )
-        
-        # Try to call a view function to verify contract is deployed
         dummy_token.functions.name().call()
         token_trading.functions.tokenPrice().call()
-        
     except Exception as e:
         print(f"Error verifying contracts: {e}")
         raise Exception("Contracts are not properly deployed. Please run deploy_contracts.py first.")
 
-    # Create CrewAI Agents
+    # Create CrewAI Agents (no tools)
     price_checker = Agent(
         role='Price Checker',
         goal='Monitor and provide accurate ETH/USD price information',
-        backstory="""You are a specialized price monitoring agent that uses Chainlink's 
-        price feed and CoinGecko's historical data to provide comprehensive ETH/USD price 
-        information. Your primary goal is to ensure accurate and timely price data for 
-        trading decisions.""",
-        tools=[get_eth_price, get_simulated_price, get_historical_prices],
+        backstory="""You are a specialized price monitoring agent that uses Chainlink's \
+        price feed and CoinGecko's historical data to provide comprehensive ETH/USD price \
+        information. Your primary goal is to ensure accurate and timely price data for \
+        trading decisions. Use the provided context for all analysis.""",
         verbose=True,
         llm=together_llm
     )
@@ -395,46 +353,12 @@ def run_simulation(duration_seconds, check_interval_seconds):
     trade_maker = Agent(
         role='Trade Maker',
         goal='Make profitable trading decisions based on price information',
-        backstory="""You are an experienced trading agent that analyzes price information 
-        and makes trading decisions. You aim to maximize profits while managing risk 
-        effectively. You use technical analysis, historical price data, and market trends 
-        to make informed decisions.""",
-        tools=[check_balance, execute_trade, get_historical_prices],
+        backstory="""You are an experienced trading agent that analyzes price information \
+        and makes trading decisions. You aim to maximize profits while managing risk \
+        effectively. You use technical analysis, historical price data, and market trends \
+        to make informed decisions. Use the provided context for all analysis.""",
         verbose=True,
         llm=together_llm
-    )
-
-    # Create Tasks
-    price_check_task = Task(
-        description="""Get the current ETH/USD price and analyze market conditions.
-        Consider both Chainlink price feed and historical price data from CoinGecko.
-        Provide a detailed analysis of the current market situation, including:
-        1. Current price and its relation to historical averages
-        2. Price trends and momentum
-        3. Support and resistance levels based on historical data
-        4. Market volatility indicators""",
-        agent=price_checker
-    )
-
-    trading_task = Task(
-        description="""Based on the price information and market analysis, make a trading decision.
-        Consider the following factors:
-        1. Current price relative to historical data and trends
-        2. Market momentum and volatility
-        3. Risk management principles
-        4. Available balance and trading limits
-        
-        Make a decision to either Buy, Sell, or Hold, with clear reasoning based on the 
-        historical price analysis.""",
-        agent=trade_maker
-    )
-
-    # Create Crew
-    crew = Crew(
-        agents=[price_checker, trade_maker],
-        tasks=[price_check_task, trading_task],
-        process=Process.sequential,
-        verbose=True
     )
 
     # Run the simulation
@@ -443,11 +367,38 @@ def run_simulation(duration_seconds, check_interval_seconds):
         while time.time() - start_time < duration_seconds:
             print(f"\n--- Cycle at {time.strftime('%H:%M:%S')} ---")
 
+            # Get real data from tools
+            eth_price = get_eth_price()
+            historical = get_historical_prices(30)
+
+            # Create Tasks with real data as context
+            price_check_task = Task(
+                description=f"""Get the current ETH/USD price and analyze market conditions.\n\nContext:\nETH Price: {eth_price}\nHistorical Data: {historical}\n\nProvide a detailed analysis of the current market situation, including:\n1. Current price and its relation to historical averages\n2. Price trends and momentum\n3. Support and resistance levels based on historical data\n4. Market volatility indicators""",
+                agent=price_checker
+            )
+
+            trading_task = Task(
+                description=f"""Based on the price information and market analysis, make a trading decision.\n\nContext:\nETH Price: {eth_price}\nHistorical Data: {historical}\n\nMake a decision to either Buy, Sell, or Hold, with clear reasoning based on the historical price analysis and context above.""",
+                agent=trade_maker
+            )
+
+            # Create Crew
+            crew = Crew(
+                agents=[price_checker, trade_maker],
+                tasks=[price_check_task, trading_task],
+                process=Process.sequential,
+                verbose=True
+            )
+
             # Execute the crew's tasks
             result = crew.kickoff()
             print("\nCrew Execution Result:", result)
-            
-            # Wait for next check
+
+            # Automatic trade logging after each trade decision
+            log_trade_decision(
+                context=f"ETH Price: {eth_price}\nHistorical Data: {historical}",
+                decision=result
+            )
             time.sleep(check_interval_seconds)
 
     except KeyboardInterrupt:
