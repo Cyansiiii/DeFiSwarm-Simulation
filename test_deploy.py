@@ -14,7 +14,7 @@ except:
 print(f"Using Solidity compiler version: {required_solc_version}")
 
 # Ganache Configuration
-GANACHE_URL = "http://127.0.0.1:8545"  # Use localhost instead of IP
+GANACHE_URL = "http://192.168.1.12:8545"  # Use the same URL as deploy_contracts.py
 GAS_PRICE = 20000000000
 GAS_LIMIT = 6721975
 CHAIN_ID = 1337  # Ganache's default chain ID
@@ -55,7 +55,8 @@ def compile_contract():
                 "*": {
                     "*": ["abi", "evm.bytecode"]
                 }
-            }
+            },
+            "evmVersion": "london"
         }
     })
     
@@ -115,4 +116,4 @@ def deploy_contract():
         raise
 
 if __name__ == "__main__":
-    deploy_contract() 
+    deploy_contract()

@@ -1,6 +1,6 @@
 {
     "DummyToken": {
-        "address": "0x159A6D02c8a246E5c95305AC72D034443458ccC7",
+        "address": "0x8144e480091fbe5393CAB456FE15a79046809fa8",
         "abi": [
             {
                 "inputs": [],
@@ -318,7 +318,7 @@
         ]
     },
     "TokenTrading": {
-        "address": "0x6B7875D66Bc94a40b830E1bAf43b26828bCc76e6",
+        "address": "0xFCBC1C5298E50A24BA34457767dd81A575cB5a04",
         "abi": [
             {
                 "inputs": [

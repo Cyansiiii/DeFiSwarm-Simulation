@@ -53,7 +53,8 @@ def compile_contract(contract_path):
             },
             "remappings": [
                 f"@openzeppelin={node_modules_path}/@openzeppelin"
-            ]
+            ],
+            "evmVersion": "london"
         }
     }, allow_paths=node_modules_path)
 
@@ -148,4 +149,4 @@ def main():
     print("Contracts deployed and data saved to contract_data.json")
 
 if __name__ == "__main__":
-    main() 
+    main()

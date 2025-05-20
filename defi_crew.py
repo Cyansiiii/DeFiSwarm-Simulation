@@ -1,20 +1,23 @@
 from langchain.agents import AgentExecutor, create_openai_functions_agent
 from langchain.tools import tool
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_groq import ChatGroq
+from langchain_together import ChatTogether
 from web3 import Web3
+from web3.middleware import geth_poa_middleware
 from alchemy import Alchemy, Network
 import time
 import random
 import os
+import json
+import requests
 
-# Configure Grok API
-os.environ["GROQ_API_KEY"] = "sk-85ff0db0bd8a457c96f7c15ccf23cd29"
+# Configure Together API
+os.environ["TOGETHER_API_KEY"] = "tgp_v1_SZfy1HF_Y4Zg5eSBw5zWmypxegW0hgYEGeJ-fE5y09A"
 
-# Create Grok LLM instance
-llm = ChatGroq(
-    api_key="sk-85ff0db0bd8a457c96f7c15ccf23cd29",
-    model_name="mixtral-8x7b-32768"
+# Create Together LLM instance
+llm = ChatTogether(
+    api_key="tgp_v1_SZfy1HF_Y4Zg5eSBw5zWmypxegW0hgYEGeJ-fE5y09A",
+    model_name="mistralai/Mixtral-8x7B-Instruct-v0.1"
 )
 
 # Constants
@@ -38,6 +41,28 @@ PRICE_FEED_ABI = [
         "type": "function"
     }
 ]
+
+# Load contract ABIs from contract_data.json
+with open("contract_data.json", "r") as f:
+    contract_data = json.load(f)
+TOKEN_TRADING_ABI = contract_data["TokenTrading"]["abi"]
+DUMMY_TOKEN_ABI = contract_data["DummyToken"]["abi"]
+
+COINGECKO_API_KEY = "CG-98Tq5aJBzpgzkv21FLsWaxdf"
+
+# Trade Logger memory
+trade_logs = []
+
+@tool
+def log_trade(action: str, details: str):
+    """Log a trade action and its details to memory."""
+    log_entry = {
+        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()),
+        "action": action,
+        "details": details
+    }
+    trade_logs.append(log_entry)
+    return f"Trade logged: {log_entry}"
 
 # Tools for Price Checker Agent
 @tool
@@ -67,6 +92,51 @@ def get_simulated_price():
     current_price = max(1500.0, round(current_price, 2))
     get_simulated_price.current_price = current_price
     return f"Simulated ETH/USD price is ${current_price:.2f}"
+
+@tool
+def get_historical_eth_price(days: int = 7):
+    """Get historical ETH/USD prices for the past N days from CoinGecko."""
+    try:
+        url = "https://api.coingecko.com/api/v3/coins/ethereum/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": days,
+            "interval": "daily",
+            "x_cg_pro_api_key": COINGECKO_API_KEY
+        }
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        prices = data.get("prices", [])
+        # Format: list of [timestamp, price]
+        price_list = [(time.strftime('%Y-%m-%d', time.gmtime(int(p[0]//1000))), p[1]) for p in prices]
+        return f"Historical ETH/USD prices (last {days} days): {price_list}"
+    except Exception as e:
+        return f"Error fetching historical prices: {e}"
+
+@tool
+def compare_eth_price(days: int = 7):
+    """Compare current ETH/USD price to historical price from N days ago using CoinGecko."""
+    try:
+        url = "https://api.coingecko.com/api/v3/coins/ethereum/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": days,
+            "interval": "daily",
+            "x_cg_pro_api_key": COINGECKO_API_KEY
+        }
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        prices = data.get("prices", [])
+        if len(prices) < 2:
+            return "Not enough data for comparison."
+        old_price = prices[0][1]
+        new_price = prices[-1][1]
+        pct_change = ((new_price - old_price) / old_price) * 100
+        return f"ETH/USD {days}d ago: ${old_price:.2f}, now: ${new_price:.2f}, change: {pct_change:.2f}%"
+    except Exception as e:
+        return f"Error comparing prices: {e}"
 
 # Tools for Trade Maker Agent
 @tool
@@ -163,11 +233,51 @@ def execute_trade(decision, amount=100):
     except Exception as e:
         return f"Error executing trade: {str(e)}"
 
+# Trade Maker: analyze prices and make trade decisions
+@tool
+def analyze_and_decide_trade():
+    """Analyze CoinGecko and Chainlink prices and make a trade decision (Buy/Sell/Hold)."""
+    try:
+        cg_price = fetch_coingecko_price()
+        chainlink_price = get_eth_price()
+        # Simple logic: if CoinGecko price > Chainlink price by >1%, suggest Sell; if < -1%, suggest Buy; else Hold
+        try:
+            cg_val = float(cg_price.split('$')[1])
+            cl_val = float(chainlink_price.split('$')[1])
+            diff_pct = ((cg_val - cl_val) / cl_val) * 100
+            if diff_pct > 1:
+                decision = f"Sell (CoinGecko price is {diff_pct:.2f}% higher than Chainlink)"
+            elif diff_pct < -1:
+                decision = f"Buy (CoinGecko price is {abs(diff_pct):.2f}% lower than Chainlink)"
+            else:
+                decision = "Hold (Prices are similar)"
+        except Exception:
+            decision = "Unable to parse prices for decision."
+        return f"Decision: {decision}\nCoinGecko: {cg_price}\nChainlink: {chainlink_price}"
+    except Exception as e:
+        return f"Error analyzing trade: {e}"
+
+# Price Checker: fetch and report prices from CoinGecko
+@tool
+def fetch_coingecko_price():
+    """Fetch the current ETH/USD price from CoinGecko."""
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {
+            "ids": "ethereum",
+            "vs_currencies": "usd",
+            "x_cg_pro_api_key": COINGECKO_API_KEY
+        }
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        price = response.json()["ethereum"]["usd"]
+        return f"CoinGecko ETH/USD price: ${price:.2f}"
+    except Exception as e:
+        return f"Error fetching CoinGecko price: {e}"
+
 # Create prompts for agents
 price_checker_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a specialized price monitoring agent that uses Chainlink's 
-    price feed to provide real-time ETH/USD price information. Your primary goal is 
-    to ensure accurate and timely price data for trading decisions."""),
+    ("system", """You are a specialized price monitoring agent that uses Chainlink's price feed and CoinGecko's historical price data to provide real-time and historical ETH/USD price information. Your primary goal is to ensure accurate and timely price data for trading decisions. Always compare the current ETH/USD price to the price from 7 days ago using CoinGecko and include this comparison in your analysis."""),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -182,10 +292,11 @@ trade_maker_prompt = ChatPromptTemplate.from_messages([
     MessagesPlaceholder(variable_name="agent_scratchpad"),
 ])
 
-# Create agents
-price_checker_tools = [get_eth_price, get_simulated_price]
-trade_maker_tools = [check_balance, execute_trade]
+# Add new tools to agents
+price_checker_tools = [fetch_coingecko_price, get_eth_price, get_simulated_price, get_historical_eth_price, compare_eth_price]
+trade_maker_tools = [analyze_and_decide_trade, check_balance, execute_trade, log_trade]
 
+# Create agents
 price_checker_agent = create_openai_functions_agent(llm, price_checker_tools, price_checker_prompt)
 trade_maker_agent = create_openai_functions_agent(llm, trade_maker_tools, trade_maker_prompt)
 
@@ -198,17 +309,28 @@ def run_defi_simulation():
     
     # Price Checker Agent gets the price
     price_result = price_checker_executor.invoke({
-        "input": "Get the current ETH/USD price and analyze the market conditions."
+        "input": "Get the current ETH/USD price and analyze the market conditions.",
+        "chat_history": [],
+        "agent_scratchpad": []
     })
     print("\nPrice Checker Result:", price_result)
     
     # Trade Maker Agent makes a decision
     trade_result = trade_maker_executor.invoke({
-        "input": f"Based on the price information: {price_result['output']}, make a trading decision."
+        "input": f"Based on the price information: {price_result['output']}, make a trading decision.",
+        "chat_history": [],
+        "agent_scratchpad": []
     })
     print("\nTrade Maker Result:", trade_result)
+
+    # Automatically log the trade decision (use .invoke for @tool)
+    log_trade.invoke({
+        "action": "Trade Decision",
+        "details": trade_result['output'] if 'output' in trade_result else str(trade_result)
+    })
+    print("\nTrade log updated:", trade_logs[-1])
     
     print("\n--- DeFi Simulation Results ---")
 
 if __name__ == "__main__":
-    run_defi_simulation() 
+    run_defi_simulation()
