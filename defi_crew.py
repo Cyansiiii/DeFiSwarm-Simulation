@@ -10,25 +10,22 @@ import random
 import os
 import json
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # Configure Together API
-# os.environ["TOGETHER_API_KEY"] = "tgp_v1_SZfy1HF_Y4Zg5eSBw5zWmypxegW0hgYEGeJ-fE5y09A"
+os.environ["TOGETHER_API_KEY"] = "tgp_v1_SZfy1HF_Y4Zg5eSBw5zWmypxegW0hgYEGeJ-fE5y09A"
 
 # Create Together LLM instance
 llm = ChatTogether(
-    api_key=os.getenv("TOGETHER_API_KEY"),
+    api_key="tgp_v1_SZfy1HF_Y4Zg5eSBw5zWmypxegW0hgYEGeJ-fE5y09A",
     model_name="mistralai/Mixtral-8x7B-Instruct-v0.1"
 )
 
 # Constants
-ALCHEMY_API_KEY = os.getenv("ALCHEMY_API_KEY")
+ALCHEMY_API_KEY = "CX-G7CvHwlDifhfPg-Uti8KCrQd8Vaze"
 ETH_USD_PRICE_FEED = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"  # Chainlink ETH/USD Price Feed
 TOKEN_TRADING_ADDRESS = "0x78b6ca4b4cc3cf7e5d9937e06a1b9ba534008ee5"
 DUMMY_TOKEN_ADDRESS = "0x246f6857e5577abcabc5fa40bd017e8c4bf739cd"
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+PRIVATE_KEY = "0xde18f385d8a7127738fcb84879781cfc1abcbdbf63ff2a014150746f13edac21"
 PRICE_FEED_ABI = [
     {
         "inputs": [],
@@ -51,7 +48,7 @@ with open("contract_data.json", "r") as f:
 TOKEN_TRADING_ABI = contract_data["TokenTrading"]["abi"]
 DUMMY_TOKEN_ABI = contract_data["DummyToken"]["abi"]
 
-COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+COINGECKO_API_KEY = "CG-98Tq5aJBzpgzkv21FLsWaxdf"
 
 # Trade Logger memory
 trade_logs = []
